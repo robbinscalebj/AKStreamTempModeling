@@ -1,0 +1,87 @@
+---
+title: "CAKN+ Temperature Analysis"
+output: html_document
+date: "2024-03-23"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(here)
+library(arrow)
+library(tidyverse)
+library(mgcv)
+
+```
+
+# This should be in transformed_data & tidying_scripts
+```{r}
+
+temp_df<-read_parquet(here("Data/Transformed_Data/nps_watertemp.parquet"))
+                      
+ts_summaries <- temp_df|>
+  group_by(site_code)|>
+  summarize(ts_start = first(datetime_utc),
+            ts_end = last(datetime_utc))
+
+daily_means <- temp_df2|>
+  mutate(date = as_date(datetime_utc))|>
+  group_by(site_code, date,day_of_year,nMonth,Year)|>
+  summarize(daily_mean_temp = mean(Temp_C,na.rm = TRUE))
+
+monthly_means <- temp_df2|>
+  group_by(site_code, month)|>
+  summarize(mean_temp = mean(Temp_C, na.rm = TRUE), n = n())
+
+ggplot(data = monthly_means, aes(x = month, y = mean_temp))+geom_point()+
+  facet_wrap(.~site_code)
+```
+
+Use GAMs to decompose time series into seasonal and annual components, by site
+```{r}
+knots <- list(day_of_year = seq(0.5, 365.5, length = 24))
+knots <- list(day_of_year = c(0.5, 20, seq(60,320, length = 20), 320,365.5))
+#good reason to stack knots outside of winter
+
+dena_df <- daily_means|>filter(site_code=="DENA-017")|>
+  mutate(daily_mean_temp = ifelse(daily_mean_temp<=0, 0.1,daily_mean_temp))
+nyear <- length(unique(dena_df$Year))
+
+ctrl <- list(niterEM = 0, optimMethod="L-BFGS-B", maxIter = 100, msMaxIter = 100)
+
+m <- mgcv::gamm(daily_mean_temp ~ te(Year, day_of_year, bs = c("cr","cc"), k = c(nyear,24)),
+          data = dena_df, method = "REML", family = Gamma(link = "log"),
+          correlation = nlme::corARMA(form = ~ 1 | Year, p = 3))
+
+
+ plot(acf(resid(m$lme, type = "normalized")))
+
+plot(m$gam)
+ggplot()+
+  geom_point(aes(x = fitted(m$lme, type = "normalized"), y = resid(m$lme, type = "normalized")))
+summary(m$gam)
+```
+
+```{r plot predictions}
+temp_pred <- predict_gam(m$gam, length_out = 100, 
+                       values = list(Year = seq(2009,2023, by = 1), 
+                                     day_of_year = seq(0,365, by = 1)))|>
+  mutate(date = as_date(day_of_year, origin = as_date(str_c(Year, "-01-01"))))|>
+  mutate(Temp.fit = exp(fit))|>
+  mutate(upper.se = exp(fit+1.96*se.fit),
+         lower.se = exp(fit-1.96*se.fit))
+
+
+  ggplot()+
+      geom_point(data = dena_df, aes(x = day_of_year, y = daily_mean_temp), alpha = 0.5, color = "grey")+
+    geom_line(data = temp_pred, aes(x = day_of_year, y = Temp.fit), se = FALSE)+
+    geom_line(data = temp_pred, aes(x = day_of_year, y = upper.se), se = FALSE, linetype = "dashed", color = "blue")+
+    geom_line(data = temp_pred, aes(x = day_of_year, y = lower.se), se = FALSE, linetype = "dashed", color = "blue")+
+    facet_wrap(.~Year)
+  
+    ggplot()+
+    geom_line(data = temp_pred, aes(x = date, y = upper.se), se = FALSE, linetype = "dashed")+
+    geom_line(data = temp_pred, aes(x = date, y = lower.se), se = FALSE, linetype = "dashed")+
+    geom_line(data = temp_pred, aes(x = date, y = Temp.fit), se = FALSE)+
+      geom_point(data = dena_df, aes(x = date, y = daily_mean_temp), alpha = 0.5, color = "grey")
+  
+```
