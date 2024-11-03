@@ -13,7 +13,7 @@ library(mgcv)
 
 ```
 
-# This should be in transformed_data & tidying_scripts
+
 ```{r}
 
 temp_df<-read_parquet(here("Data/Transformed_Data/nps_watertemp.parquet"))
@@ -28,11 +28,19 @@ daily_means <- temp_df2|>
   group_by(site_code, date,day_of_year,nMonth,Year)|>
   summarize(daily_mean_temp = mean(Temp_C,na.rm = TRUE))
 
-monthly_means <- temp_df2|>
-  group_by(site_code, month)|>
+monthly_means <- temp_df|>
+  group_by(site_code, nMonth)|>
   summarize(mean_temp = mean(Temp_C, na.rm = TRUE), n = n())
 
-ggplot(data = monthly_means, aes(x = month, y = mean_temp))+geom_point()+
+monthly_means2 <- temp_df|>
+  mutate(year = year(datetime_utc))|>
+  group_by(site_code, nMonth, year)|>
+  summarize(mean_temp = mean(Temp_C, na.rm = TRUE), n = n())
+
+ggplot(data = monthly_means2, aes(x = nMonth, y = mean_temp))+geom_point()+
+  facet_wrap(.~site_code)
+
+ggplot(data = monthly_means2, aes(x = nMonth, y = mean_temp, group = year))+geom_smooth(method = "gam", se = FALSE)+
   facet_wrap(.~site_code)
 ```
 
